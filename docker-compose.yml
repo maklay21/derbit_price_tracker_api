@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-prices}
+      POSTGRES_USER: ${POSTGRES_USER:-prices}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-prices} -d ${POSTGRES_DB:-prices}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://prices:change-me@db:5432/prices}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://prices:change-me@db:5432/prices}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DERIBIT_BASE_URL: ${DERIBIT_BASE_URL:-https://www.deribit.com/api/v2}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--queues=prices", "--loglevel=INFO"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://prices:change-me@db:5432/prices}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DERIBIT_BASE_URL: ${DERIBIT_BASE_URL:-https://www.deribit.com/api/v2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=INFO"]
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
